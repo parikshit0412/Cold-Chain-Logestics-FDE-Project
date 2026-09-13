@@ -2,6 +2,7 @@ from pathlib import Path
 import pandas as pd
 import urllib
 import os
+import pyodbc
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 
@@ -43,9 +44,16 @@ df_legacy['SYS_INGEST_FLAG'] = 'Y'
 
 # 3. Connect to Docker MSSQL Server
 print("Connecting to legacy MSSQL Database...")
-# Use the pyodbc driver. (Ensure you have ODBC Driver 17 or 18 for SQL Server installed on your OS)
-connection_string = (
-        f"DRIVER={{ODBC Driver 18 for SQL Server}};"
+
+# Check for modern ODBC Drivers first, fallback to pymssql if ODBC Driver 17/18 is not installed
+odbc_drivers = pyodbc.drivers() if 'pyodbc' in globals() else []
+modern_odbc = [d for d in odbc_drivers if "ODBC Driver 18" in d or "ODBC Driver 17" in d]
+
+if modern_odbc:
+    selected_driver = modern_odbc[0]
+    print(f"Using ODBC Driver: {selected_driver}")
+    connection_string = (
+        f"DRIVER={{{selected_driver}}};"
         f"SERVER={db_host},{db_port};"
         f"DATABASE=master;"
         f"UID={db_user};"
@@ -53,14 +61,22 @@ connection_string = (
         f"Encrypt=no;"
         f"TrustServerCertificate=yes;"
     )
-
-params = urllib.parse.quote_plus(connection_string)
-
-engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+    params = urllib.parse.quote_plus(connection_string)
+    engine = create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+else:
+    print("ODBC Driver 17/18 not detected. Falling back to pymssql connector...")
+    try:
+        import pymssql
+        engine = create_engine(f"mssql+pymssql://{db_user}:{db_password}@{db_host}:{db_port}/master")
+    except ImportError:
+        raise RuntimeError(
+            "Neither 'ODBC Driver 17/18 for SQL Server' nor 'pymssql' was found.\n"
+            "Please run: pip install pymssql OR install Microsoft ODBC Driver 18 for SQL Server."
+        )
 
 # 4. Ingest data into the messy table name
 table_name = 'TBL_SC_FLEET_HIST_RAW'
 print(f"Ingesting into {table_name}. This may take a minute...")
 df_legacy.to_sql(table_name, engine, if_exists='replace', index=False, schema='dbo')
 
-print("✅ Legacy data ingestion complete!")
+print("[SUCCESS] Legacy data ingestion complete!")
