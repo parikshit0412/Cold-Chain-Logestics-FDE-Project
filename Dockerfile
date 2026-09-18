@@ -33,9 +33,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements file first to take advantage of Docker layer caching
 COPY requirements.txt .
 
-# Upgrade pip and install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+# Create a dedicated virtual environment inside the container to avoid root pip warnings
+ENV VIRTUAL_ENV=/opt/venv
+RUN python -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Upgrade pip and install lightweight CPU-only PyTorch (reduces download from ~2.8GB to ~150MB)
+# then install remaining dependencies cleanly inside the virtual environment
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application codebase
 COPY . .
