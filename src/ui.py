@@ -50,7 +50,7 @@ db_host = os.getenv("SQL_SERVER_HOST", "localhost")
 db_port = os.getenv("SQL_SERVER_PORT", "1433")
 # The Agent connects as a Read-Only user (USR_FDE_RO) for safety
 db_user = os.getenv("SQL_AGENT_USER", "USR_FDE_RO")
-db_password = os.getenv("SQL_AGENT_PASSWORD")
+db_password = os.getenv("SQL_AGENT_PASSWORD", "AgentPassword2026!")
 
 def get_db_url(user, password):
     """
@@ -251,16 +251,26 @@ if app_mode == "🧊 Dispatch Console":
                             
                             # B. Did the AI generate a final text response for the user?
                             if latest_msg.content:
-                                final_response = latest_msg.content
-                                status.update(label="📝 Generating Operational Resolution Report...")
+                                # Gemini sometimes returns a list of dictionaries instead of a plain string
+                                if isinstance(latest_msg.content, list):
+                                    # Extract all text blocks from the list and join them together
+                                    text_parts = [c.get("text", "") for c in latest_msg.content if isinstance(c, dict) and "text" in c]
+                                    extracted_text = "".join(text_parts).strip()
+                                else:
+                                    # Otherwise, just use it as a normal string
+                                    extracted_text = str(latest_msg.content).strip()
                                 
-                                # Log the final text response to the Audit Log database
-                                write_audit_log(
-                                    session_id=st.session_state.thread_id,
-                                    node_name="reasoner_final",
-                                    tool_name="LLM Text Synthesis",
-                                    content=final_response
-                                )
+                                if extracted_text:
+                                    final_response = extracted_text
+                                    status.update(label="📝 Generating Operational Resolution Report...")
+                                    
+                                    # Log the final text response to the Audit Log database
+                                    write_audit_log(
+                                        session_id=st.session_state.thread_id,
+                                        node_name="reasoner_final",
+                                        tool_name="LLM Text Synthesis",
+                                        content=final_response
+                                    )
                                 
                         # If it's the "tools" node (Database/API) taking a turn...
                         elif node_name == "tools":
