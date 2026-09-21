@@ -69,32 +69,33 @@ IS_SQLITE_MODE = False
 
 def init_embedded_sqlite():
     """
-    Initializes a local embedded SQLite database, attaches FDE_VIEWS and dbo schemas,
-    and auto-populates VW_ACTIVE_FLEET and AgentAuditLog if an external MSSQL server is unavailable.
+    Initializes a local embedded SQLite database and auto-populates
+    VW_ACTIVE_FLEET and AgentAuditLog if an external MSSQL server is unavailable.
     """
+    import sqlite3
     import pandas as pd
     sqlite_db_path = project_root / "data" / "cold_chain_telemetry.db"
     sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path_str = sqlite_db_path.as_posix()
-    engine = create_engine(f"sqlite:///{db_path_str}", connect_args={"check_same_thread": False})
     
-    @event.listens_for(engine, "connect")
-    def attach_schemas(dbapi_connection, connection_record):
-        try:
-            cursor = dbapi_connection.cursor()
-            cursor.execute(f"ATTACH DATABASE '{db_path_str}' AS FDE_VIEWS")
-            cursor.execute(f"ATTACH DATABASE '{db_path_str}' AS dbo")
-            cursor.close()
-        except Exception:
-            pass
+    # 1. Verify / Populate using raw sqlite3 to avoid any transaction or locking quirks
+    with sqlite3.connect(db_path_str) as s_conn:
+        cursor = s_conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='VW_ACTIVE_FLEET'")
+        table_exists = cursor.fetchone()
+        
+        if not table_exists:
+            # Look for raw CSV across standard project paths
+            candidate_paths = [
+                project_root / "data" / "raw" / "dynamic_supply_chain_logistics_dataset.csv",
+                Path.cwd() / "data" / "raw" / "dynamic_supply_chain_logistics_dataset.csv",
+                Path(__file__).resolve().parent.parent / "data" / "raw" / "dynamic_supply_chain_logistics_dataset.csv"
+            ]
+            csv_found = next((p for p in candidate_paths if p.exists()), None)
             
-    with engine.connect() as conn:
-        res = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='VW_ACTIVE_FLEET'")).fetchall()
-        if not res:
-            raw_csv = project_root / "data" / "raw" / "dynamic_supply_chain_logistics_dataset.csv"
-            if raw_csv.exists():
-                print(f"[INFO] Populating Embedded Telemetry DB from {raw_csv.name}...")
-                df = pd.read_csv(raw_csv)
+            if csv_found:
+                print(f"[INFO] Populating Embedded Telemetry DB from {csv_found.name}...")
+                df = pd.read_csv(csv_found)
                 clean_mapping = {
                     'timestamp': 'Timestamp',
                     'vehicle_gps_latitude': 'Latitude',
@@ -108,10 +109,12 @@ def init_embedded_sqlite():
                 }
                 cols = [c for c in clean_mapping.keys() if c in df.columns]
                 df_clean = df[cols].rename(columns=clean_mapping)
-                df_clean.to_sql("VW_ACTIVE_FLEET", engine, if_exists="replace", index=False)
-                df_clean.to_sql("TBL_SC_FLEET_HIST_RAW", engine, if_exists="replace", index=False)
+                df_clean.to_sql("VW_ACTIVE_FLEET", s_conn, if_exists="replace", index=False)
+                df_clean.to_sql("TBL_SC_FLEET_HIST_RAW", s_conn, if_exists="replace", index=False)
+            else:
+                print("[WARNING] CSV dataset not found for embedded telemetry DB initialization.")
             
-            conn.execute(text("""
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS AgentAuditLog (
                     LogID INTEGER PRIMARY KEY AUTOINCREMENT,
                     Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -120,9 +123,14 @@ def init_embedded_sqlite():
                     ToolName TEXT,
                     Content TEXT
                 )
-            """))
-            conn.commit()
-            print("[INFO] Embedded Telemetry Database initialized successfully!")
+            """)
+            s_conn.commit()
+            print("[INFO] Embedded Telemetry Database verified successfully!")
+            
+    engine = create_engine(
+        f"sqlite:///{db_path_str}",
+        connect_args={"check_same_thread": False}
+    )
     return engine
 
 def create_db_engine():
