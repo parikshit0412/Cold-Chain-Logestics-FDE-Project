@@ -58,6 +58,11 @@ ehthumbs.db
 
 # Model weights, embeddings and vector indexes
 *.pt
+*.bin
+*.onnx
+*.db
+*.sqlite
+*.sqlite3
 *.pth
 *.bin
 *.safetensors

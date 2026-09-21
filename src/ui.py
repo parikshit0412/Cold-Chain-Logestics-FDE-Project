@@ -39,47 +39,9 @@ if str(project_root) not in sys.path:
 # Load all the secrets from the .env file located in the project root
 load_dotenv(project_root / ".env")
 
-# Import our fully built LangGraph agent from orchestrator.py
+# Import our fully built LangGraph agent and database connection from backend
 from src.orchestrator import fde_agent
-
-# ==========================================
-# 2. SQL CREDENTIALS MAPPING FROM .ENV
-# ==========================================
-# Fetch the database connection details. If they aren't in .env, use default values.
-db_host = os.getenv("SQL_SERVER_HOST", "localhost")
-db_port = os.getenv("SQL_SERVER_PORT", "1433")
-# The Agent connects as a Read-Only user (USR_FDE_RO) for safety
-db_user = os.getenv("SQL_AGENT_USER", "USR_FDE_RO")
-db_password = os.getenv("SQL_AGENT_PASSWORD", "AgentPassword2026!")
-
-def get_db_url(user, password):
-    """
-    This function dynamically generates the database connection string.
-    It first tries to use Microsoft's official 'pyodbc' driver. If that driver
-    isn't installed on your Windows machine, it falls back to 'pymssql', preventing crashes!
-    """
-    try:
-        import pyodbc
-        available_drivers = pyodbc.drivers()
-        modern_odbc = [d for d in available_drivers if "ODBC Driver 18" in d or "ODBC Driver 17" in d]
-        if modern_odbc:
-            driver = modern_odbc[0]
-            conn_str = (
-                f"DRIVER={{{driver}}};SERVER={db_host},{db_port};"
-                f"DATABASE=master;UID={user};PWD={password};"
-                f"Encrypt=no;TrustServerCertificate=yes;"
-            )
-            # Safely encode the connection string for SQLAlchemy
-            params = urllib.parse.quote_plus(conn_str)
-            return f"mssql+pyodbc:///?odbc_connect={params}"
-    except Exception:
-        pass
-    
-    # Fallback to pymssql if pyodbc fails
-    return f"mssql+pymssql://{user}:{password}@{db_host}:{db_port}/master"
-
-# Create the main database engine that the Agent will use to write its logs
-log_engine = create_engine(get_db_url(db_user, db_password))
+from src.agent_tools import db_engine, IS_SQLITE_MODE
 
 def write_audit_log(session_id, node_name, tool_name, content):
     """
@@ -87,19 +49,17 @@ def write_audit_log(session_id, node_name, tool_name, content):
     Every time the AI thinks or uses a tool, we save it here for security and compliance.
     """
     try:
-        # Open a connection to the database
-        with log_engine.connect() as conn:
-            # Execute an INSERT statement into our AgentAuditLog table
-            conn.execute(text("""
-                INSERT INTO FDE_VIEWS.AgentAuditLog (SessionID, NodeExecuted, ToolName, Content)
+        table_name = "AgentAuditLog" if IS_SQLITE_MODE else "FDE_VIEWS.AgentAuditLog"
+        with db_engine.connect() as conn:
+            conn.execute(text(f"""
+                INSERT INTO {table_name} (SessionID, NodeExecuted, ToolName, Content)
                 VALUES (:session_id, :node_name, :tool_name, :content)
             """), {
-                "session_id": session_id,
-                "node_name": node_name,
-                "tool_name": tool_name,
-                "content": content
+                "session_id": str(session_id),
+                "node_name": str(node_name),
+                "tool_name": str(tool_name),
+                "content": str(content)
             })
-            # Commit (save) the changes permanently to the database
             conn.commit()
     except Exception as e:
         # If it fails, print the error in the console but don't crash the web app
@@ -343,18 +303,16 @@ elif app_mode == "🛡️ Security & Audit Logs":
         
         if input_user == expected_admin_user and input_pass == expected_admin_pass:
             try:
-                # Build a brand new connection using the ADMIN credentials, not the basic Agent credentials
-                admin_engine = create_engine(get_db_url(input_user, input_pass))
-                
                 # Fetch all logs, ordering by the newest first
-                with admin_engine.connect() as conn:
-                    query = """
+                table_target = "AgentAuditLog" if IS_SQLITE_MODE else "FDE_VIEWS.AgentAuditLog"
+                with db_engine.connect() as conn:
+                    query = f"""
                         SELECT LogID, Timestamp, SessionID, NodeExecuted, ToolName, Content 
-                        FROM FDE_VIEWS.AgentAuditLog 
+                        FROM {table_target} 
                         ORDER BY Timestamp DESC
                     """
                     # Convert the SQL results directly into a Pandas DataFrame
-                    df = pd.read_sql(query, conn)
+                    df = pd.read_sql(text(query), conn)
                 
                 st.success("✅ Authenticated successfully as Admin.")
                 
