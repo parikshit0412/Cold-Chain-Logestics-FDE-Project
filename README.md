@@ -93,9 +93,34 @@ To launch the full Streamlit UI interface:
 streamlit run src/ui.py
 ```
 
+## 💡 Sample Dispatcher Queries & Scenarios
+
+You can test the agent in the interactive UI or CLI using these sample operational scenarios:
+
+### 1. 🚨 Temperature Breach & Anomaly Analysis (Full Tri-Tool Flow)
+> *"Check the fleet for any active temperature breaches or high-risk cargo anomalies. What are the corridor weather conditions at those locations, and what actions are required under our SOP?"*
+- **Triggers**: `query_telemetry_db` → `fetch_corridor_conditions` → `search_compliance_sop`
+
+### 2. 🚛 Port Congestion & Rerouting Protocol
+> *"Are there any shipments experiencing severe port congestion (>7.0)? What is our mandatory diversion protocol according to the SOP?"*
+- **Triggers**: `query_telemetry_db` (checks `Port_Congestion_Level`) → `search_compliance_sop` (Inland Empire Depot diversion rule)
+
+### 3. ⚠️ High-Risk Delay Escalation
+> *"Show me all shipments classified as High Risk with delay probability greater than 60%. What escalation steps are required?"*
+- **Triggers**: `query_telemetry_db` (filters `Risk_Classification` and `Delay_Probability`) → `search_compliance_sop` (Tier 2 Escalation protocol)
+
+### 4. 🌤️ Real-Time GPS Corridor Weather
+> *"What are the current external weather conditions and transit risks for a truck near latitude 34.05, longitude -118.25?"*
+- **Triggers**: `fetch_corridor_conditions` (queries Open-Meteo REST API)
+
+### 5. 🔍 SOP Regulatory Search
+> *"What is the standard operating protocol if refrigerated fresh perishables cargo temperature exceeds 4.0°C?"*
+- **Triggers**: `search_compliance_sop` (retrieves Section 1 Temperature Breach mitigation)
+
 ## 📁 Repository Structure
 - `/data/` - Source compliance SOP documents and raw legacy files.
 - `/docs/` - System architecture instructions and phase planning.
 - `/scripts/` - Database ingestion and setup scripts.
 - `/src/` - Core application logic, LangGraph orchestrator, and UI.
 - `/src/prompts/` - Externalized system prompts and AI behavioral guidelines.
+
