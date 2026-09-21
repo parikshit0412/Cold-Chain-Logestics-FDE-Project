@@ -58,6 +58,8 @@ retriever = vector_store.as_retriever(search_kwargs={"k": 2})
 # ==========================================
 # Database Connection Setup & Fallback
 # ==========================================
+from sqlalchemy import event
+
 db_host = os.getenv("SQL_SERVER_HOST", "localhost")
 db_port = os.getenv("SQL_SERVER_PORT", "1433")
 db_user = os.getenv("SQL_AGENT_USER", "USR_FDE_RO")
@@ -67,13 +69,25 @@ IS_SQLITE_MODE = False
 
 def init_embedded_sqlite():
     """
-    Initializes a local embedded SQLite database and auto-populates
-    VW_ACTIVE_FLEET and AgentAuditLog if an external MSSQL server is unavailable.
+    Initializes a local embedded SQLite database, attaches FDE_VIEWS and dbo schemas,
+    and auto-populates VW_ACTIVE_FLEET and AgentAuditLog if an external MSSQL server is unavailable.
     """
     import pandas as pd
     sqlite_db_path = project_root / "data" / "cold_chain_telemetry.db"
-    engine = create_engine(f"sqlite:///{sqlite_db_path.as_posix()}")
+    sqlite_db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path_str = sqlite_db_path.as_posix()
+    engine = create_engine(f"sqlite:///{db_path_str}", connect_args={"check_same_thread": False})
     
+    @event.listens_for(engine, "connect")
+    def attach_schemas(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute(f"ATTACH DATABASE '{db_path_str}' AS FDE_VIEWS")
+            cursor.execute(f"ATTACH DATABASE '{db_path_str}' AS dbo")
+            cursor.close()
+        except Exception:
+            pass
+            
     with engine.connect() as conn:
         res = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='VW_ACTIVE_FLEET'")).fetchall()
         if not res:
@@ -113,7 +127,6 @@ def init_embedded_sqlite():
 
 def create_db_engine():
     global IS_SQLITE_MODE
-    # If explicitly configured or remote host is localhost with no server running, attempt quick test
     try:
         if os.getenv("USE_EMBEDDED_DB", "").strip().lower() in ["true", "1", "yes"]:
             raise RuntimeError("USE_EMBEDDED_DB is enabled.")
@@ -136,14 +149,14 @@ def create_db_engine():
                 connect_args={"timeout": 2, "login_timeout": 2}
             )
         
-        # Test connection with fast timeout
+        # Test connection AND verify view existence
         with engine.connect() as test_conn:
-            test_conn.execute(text("SELECT 1"))
-        print("[INFO] Connected to Microsoft SQL Server Telemetry DB.")
+            test_conn.execute(text("SELECT TOP 1 1 FROM FDE_VIEWS.VW_ACTIVE_FLEET"))
+        print("[INFO] Connected to Microsoft SQL Server Telemetry DB (FDE_VIEWS.VW_ACTIVE_FLEET).")
         IS_SQLITE_MODE = False
         return engine
-    except Exception:
-        print("[INFO] Remote MSSQL server not detected. Activating Embedded Standalone DB mode...")
+    except Exception as e:
+        print(f"[INFO] Remote MSSQL not available or view missing ({e}). Activating Embedded Standalone DB mode...")
         IS_SQLITE_MODE = True
         return init_embedded_sqlite()
 
@@ -169,14 +182,22 @@ def query_telemetry_db(sql_query: str) -> str:
             
         executed_query = sql_query
         if IS_SQLITE_MODE:
-            # Strip schema prefixes like FDE_VIEWS. or dbo. for SQLite compatibility
-            executed_query = re.sub(r'\b(FDE_VIEWS|dbo)\.', '', executed_query, flags=re.IGNORECASE)
-            # Adapt 'SELECT TOP N ...' to 'SELECT ... LIMIT N'
-            top_match = re.search(r'SELECT\s+TOP\s+(\d+)\s+(.*)', executed_query, flags=re.IGNORECASE | re.DOTALL)
-            if top_match:
-                limit_num = top_match.group(1)
-                rest_of_query = top_match.group(2)
-                executed_query = f"SELECT {rest_of_query} LIMIT {limit_num}"
+            # 1. Strip bracketed or plain schema prefixes [FDE_VIEWS]., FDE_VIEWS., [dbo]., dbo.
+            executed_query = re.sub(r'(\[?FDE_VIEWS\]?|\[?dbo\]?)\.', '', executed_query, flags=re.IGNORECASE)
+            # 2. Handle 'SELECT DISTINCT TOP N ...'
+            executed_query = re.sub(
+                r'SELECT\s+DISTINCT\s+TOP\s*\(?(\d+)\)?\s+(.*)',
+                r'SELECT DISTINCT \2 LIMIT \1',
+                executed_query,
+                flags=re.IGNORECASE | re.DOTALL
+            )
+            # 3. Handle 'SELECT TOP N ...'
+            executed_query = re.sub(
+                r'SELECT\s+TOP\s*\(?(\d+)\)?\s+(.*)',
+                r'SELECT \2 LIMIT \1',
+                executed_query,
+                flags=re.IGNORECASE | re.DOTALL
+            )
             
         with db_engine.connect() as conn:
             cursor = conn.execute(text(executed_query))
