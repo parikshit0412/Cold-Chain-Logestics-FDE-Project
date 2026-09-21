@@ -142,8 +142,8 @@ def create_db_engine():
         print("[INFO] Connected to Microsoft SQL Server Telemetry DB.")
         IS_SQLITE_MODE = False
         return engine
-    except Exception as e:
-        print(f"[INFO] Remote MSSQL not available ({e}). Activating Embedded Standalone DB mode...")
+    except Exception:
+        print("[INFO] Remote MSSQL server not detected. Activating Embedded Standalone DB mode...")
         IS_SQLITE_MODE = True
         return init_embedded_sqlite()
 
